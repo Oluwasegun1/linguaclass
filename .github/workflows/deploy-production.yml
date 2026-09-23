@@ -1,0 +1,90 @@
+name: Deploy to Production (Cloud Run)
+
+on:
+  push:
+    branches: ["main"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROD_PROJECT_ID || secrets.GCP_PROJECT_ID }}
+  GCP_REGION: europe-west1
+  GAR_REPO: linguaclass-docker
+  SERVICE_NAME: linguaclass-prod-web
+  WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
+  WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+
+jobs:
+  deploy-production:
+    name: Build & Deploy Production
+    runs-on: ubuntu-latest
+    environment: production
+
+    permissions:
+      contents: read
+      id-token: write # Required for Workload Identity Federation (OIDC)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud via Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Google Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up Node.js for Prisma Migrations
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install dependencies & run DB migrations
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.PROD_DIRECT_URL }}
+        run: |
+          npm ci
+          ./scripts/run-migrations.sh
+
+      - name: Set Image Tag
+        id: vars
+        run: echo "IMAGE_TAG=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPO }}/web:prod-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build & Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.IMAGE_TAG }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPO }}/web:prod-latest
+
+      - name: Deploy to Cloud Run (Production)
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.GCP_REGION }}
+          image: ${{ steps.vars.outputs.IMAGE_TAG }}
+          flags: |
+            --allow-unauthenticated
+            --min-instances=1
+            --max-instances=10
+            --concurrency=80
+            --cpu=2
+            --memory=2Gi
+            --port=8080
+            --execution-environment=gen2
+            --set-env-vars=NODE_ENV=production,GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }},GCS_BUCKET_NAME=linguaclass-prod-media,NEXT_PUBLIC_SUPABASE_URL=${{ secrets.PROD_NEXT_PUBLIC_SUPABASE_URL }},NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.PROD_NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }},NEXT_PUBLIC_LIVEKIT_URL=${{ secrets.PROD_NEXT_PUBLIC_LIVEKIT_URL }}
+            --set-secrets=DATABASE_URL=PROD_DATABASE_URL:latest,DIRECT_URL=PROD_DIRECT_URL:latest,SUPABASE_SECRET_KEY=PROD_SUPABASE_SECRET_KEY:latest,LIVEKIT_API_KEY=PROD_LIVEKIT_API_KEY:latest,LIVEKIT_API_SECRET=PROD_LIVEKIT_API_SECRET:latest

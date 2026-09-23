@@ -1,0 +1,4 @@
+# gitignore for the prisma directory
+# Keep migration files and schema, ignore generated artifacts
+*.db
+*.db-journal

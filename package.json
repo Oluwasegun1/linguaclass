@@ -7,7 +7,13 @@
     "dev": "turbo dev",
     "lint": "turbo lint",
     "format": "turbo format",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+    "db:generate": "npm run -w @workspace/database db:generate",
+    "db:push": "npm run -w @workspace/database db:push",
+    "db:migrate": "npm run -w @workspace/database db:migrate",
+    "db:migrate:dev": "npm run -w @workspace/database db:migrate:dev",
+    "db:studio": "npm run -w @workspace/database db:studio",
+    "db:seed": "npm run -w @workspace/database db:seed"
   },
   "devDependencies": {
     "@workspace/eslint-config": "*",
@@ -24,5 +30,19 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "allowScripts": {
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "prisma@6.19.3": true,
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.116.0"
+  },
+  "prisma": {
+    "schema": "packages/database/prisma/schema.prisma"
+  }
 }
