@@ -15,7 +15,10 @@
     "GCS_BUCKET_NAME",
     "LIVEKIT_API_KEY",
     "LIVEKIT_API_SECRET",
-    "NEXT_PUBLIC_LIVEKIT_URL"
+    "NEXT_PUBLIC_LIVEKIT_URL",
+    "GEMINI_API_KEY",
+    "GOOGLE_CLOUD_PROJECT",
+    "GCP_LOCATION"
   ],
   "tasks": {
     "build": {
