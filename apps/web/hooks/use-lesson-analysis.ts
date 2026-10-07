@@ -2,6 +2,52 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
+// ── LessonIntelligence types (mirroring server-side Zod schema) ──────────────
+
+export interface TopicItem {
+  title: string;
+  description?: string;
+}
+
+export interface VocabularyEntry {
+  word: string;
+  meaning: string;
+  context?: string;
+  example?: string;
+  partOfSpeech?: string;
+}
+
+export interface GrammarConceptItem {
+  concept: string;
+  explanation: string;
+  example?: string;
+}
+
+export interface CorrectionItem {
+  original: string;
+  corrected: string;
+  explanation: string;
+  category?: string;
+}
+
+export interface SuggestedPracticeItem {
+  title: string;
+  instruction: string;
+}
+
+export interface LessonIntelligencePayload {
+  summary: string;
+  topics: TopicItem[];
+  vocabulary: VocabularyEntry[];
+  grammar: GrammarConceptItem[];
+  corrections: CorrectionItem[];
+  strengths: string[];
+  areasForImprovement: string[];
+  suggestedPractice: SuggestedPracticeItem[];
+}
+
+// ── Legacy item types (from GrammarCorrection / VocabularyItem DB models) ────
+
 export interface GrammarCorrectionItem {
   id: string;
   aiAnalysisId: string;
@@ -30,6 +76,8 @@ export interface VocabularyCandidateItem {
   createdAt: string;
 }
 
+// ── API response type ─────────────────────────────────────────────────────────
+
 export interface LessonAnalysisData {
   lesson: {
     id: string;
@@ -38,6 +86,7 @@ export interface LessonAnalysisData {
     durationMins: number;
     timezone: string;
     status: string;
+    objectives: string | null;
     course: {
       id: string;
       title: string;
@@ -57,10 +106,16 @@ export interface LessonAnalysisData {
   analysis: {
     id: string;
     sessionId: string;
+    analysisStatus: "SUGGESTED" | "ACCEPTED" | "EDITED" | "DISMISSED";
+    model: string;
+    modelVersion: string;
+    sourceTranscript: string | null;
     summaryText: string | null;
     topicsCovered: string[];
-    modelVersion: string;
+    payload: LessonIntelligencePayload | null;
     processedAt: string;
+    createdAt: string;
+    reviewedAt: string | null;
     corrections: GrammarCorrectionItem[];
     vocabularyItems: VocabularyCandidateItem[];
   } | null;
@@ -77,6 +132,8 @@ export interface LessonAnalysisData {
   } | null;
 }
 
+// ── Queries & Mutations ───────────────────────────────────────────────────────
+
 export function useLessonAnalysis(lessonId: string) {
   return useQuery<LessonAnalysisData>({
     queryKey: ["lesson-analysis", lessonId],
@@ -92,22 +149,41 @@ export function useLessonAnalysis(lessonId: string) {
   });
 }
 
+export interface TriggerAnalysisOptions {
+  lessonId: string;
+  transcript?: string;
+  language?: string;
+  studentLevel?: string;
+  objectives?: string[];
+}
+
 export function useTriggerLessonAnalysis() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (lessonId: string) => {
+    mutationFn: async (options: TriggerAnalysisOptions) => {
+      const { lessonId, ...body } = options;
       const res = await fetch(`/api/lessons/${lessonId}/analyze`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || "Failed to analyze lesson");
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "Failed to analyze lesson"
+        );
       }
       return res.json();
     },
-    onSuccess: (_, lessonId) => {
-      queryClient.invalidateQueries({ queryKey: ["lesson-analysis", lessonId] });
-      queryClient.invalidateQueries({ queryKey: ["lessons", lessonId] });
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ["lesson-analysis", variables.lessonId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["lessons", variables.lessonId],
+      });
     },
   });
 }
@@ -139,7 +215,46 @@ export function useReviewItem() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["lesson-analysis", variables.lessonId] });
+      queryClient.invalidateQueries({
+        queryKey: ["lesson-analysis", variables.lessonId],
+      });
+    },
+  });
+}
+
+/**
+ * Updates the full AI analysis payload after teacher review.
+ * Calls PATCH /api/lessons/[id]/analyze with the updated payload and status.
+ */
+export function useSaveAnalysisReview() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      lessonId,
+      analysisId,
+      status,
+      payload,
+    }: {
+      lessonId: string;
+      analysisId: string;
+      status: "ACCEPTED" | "EDITED" | "DISMISSED";
+      payload?: LessonIntelligencePayload;
+    }) => {
+      const res = await fetch(`/api/lessons/${lessonId}/analyze/${analysisId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, payload }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to save review");
+      }
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ["lesson-analysis", variables.lessonId],
+      });
     },
   });
 }

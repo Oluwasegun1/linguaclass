@@ -287,18 +287,32 @@ model TranscriptSegment {
 // ── AI ANALYSIS ────────────────────────────────────────────
 
 model AIAnalysis {
-  id             String   @id @default(uuid())
-  sessionId      String   @unique
-  session        Session  @relation(fields: [sessionId], references: [id])
-  summaryText    String?
-  topicsCovered  String[] // ["subjonctif", "irregular verbs"]
-  modelVersion   String   // "claude-sonnet-5"
-  processedAt    DateTime @default(now())
-  createdAt      DateTime @default(now())
+  id               String    @id @default(uuid())
+  sessionId        String    @unique
+  session          Session   @relation(fields: [sessionId], references: [id])
+  analysisStatus   AIStatus  @default(SUGGESTED)
 
-  vocabularyItems VocabularyItem[]  // extracted, pending teacher review
+  // Provenance
+  model            String    @default("gemini")
+  modelVersion     String    // e.g. "gemini-2.0-flash"
+  sourceTranscript String?   // the raw text transcript that was analyzed
+
+  // Legacy flat fields (kept for backwards compatibility)
+  summaryText      String?
+  topicsCovered    String[]
+
+  // Full structured Lesson Intelligence payload (validated JSON)
+  payload          Json?
+
+  processedAt      DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  reviewedAt       DateTime?
+
+  vocabularyItems VocabularyItem[]   // extracted items, pending teacher review
   corrections     GrammarCorrection[]
 
+  @@index([sessionId])
   @@map("ai_analyses")
 }
 

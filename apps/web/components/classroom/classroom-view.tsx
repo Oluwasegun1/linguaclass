@@ -25,6 +25,7 @@ import {
   X,
   Volume2,
   Users,
+  AlertCircle,
 } from "lucide-react";
 import type { Participant, TrackPublication, RemoteTrackPublication } from "livekit-client";
 import { Track } from "livekit-client";
@@ -78,7 +79,9 @@ export function ClassroomView({
     room,
     isConnected,
     isConnecting,
+    isDemoMode,
     error,
+    localMediaStream,
     isMicEnabled,
     isCamEnabled,
     isScreenSharing,
@@ -87,6 +90,7 @@ export function ClassroomView({
     messages,
     transcripts,
     sharedNotes,
+    enableDemoMode,
     toggleMicrophone,
     toggleCamera,
     toggleScreenShare,
@@ -208,6 +212,13 @@ export function ClassroomView({
             <span className="size-1.5 rounded-full bg-green-400 animate-ping" />
             <span>LIVE</span>
           </div>
+
+          {/* Local Preview Mode Badge */}
+          {isDemoMode && (
+            <span className="hidden sm:inline-flex rounded-full bg-amber/20 border border-amber/30 px-2.5 py-0.5 text-[11px] font-semibold text-amber">
+              Local Preview Mode
+            </span>
+          )}
         </div>
       </header>
 
@@ -221,11 +232,49 @@ export function ClassroomView({
               <p className="text-sm font-medium text-white/80">Connecting to secure video classroom...</p>
             </div>
           ) : error ? (
-            <div className="m-auto max-w-md rounded-2xl border border-coral bg-coral-light/20 p-6 text-center space-y-3">
-              <p className="text-sm font-semibold text-coral">{error}</p>
-              <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
-                Reconnect
-              </Button>
+            <div className="m-auto max-w-lg rounded-2xl border border-coral/40 bg-[#0F1E2A] p-7 text-center space-y-4 shadow-2xl">
+              <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-coral/20 text-coral">
+                <AlertCircle className="size-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-display text-lg font-bold text-white">
+                  LiveKit Video Connection Failed
+                </h3>
+                <p className="text-xs text-[#9AABBA] leading-relaxed">
+                  {error}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3.5 text-left text-xs text-[#9AABBA] space-y-2">
+                <div className="font-semibold text-white/90 flex items-center gap-1.5">
+                  <Sparkles className="size-3.5 text-teal" />
+                  <span>Why this happens:</span>
+                </div>
+                <p className="leading-relaxed">
+                  Real-time multi-peer video requires an active LiveKit WebRTC server. When <code className="text-teal-light font-mono">NEXT_PUBLIC_LIVEKIT_URL</code> is not configured or offline, the signal connection cannot be established.
+                </p>
+                <p className="text-[11px] text-white/60">
+                  You can continue in <strong>Local Preview Mode</strong> to test all classroom features (camera, live speech simulator, transcripts, chat, and AI lesson summaries) or configure LiveKit Cloud in <code className="text-teal-light font-mono">apps/web/.env.local</code>.
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={enableDemoMode}
+                  className="w-full sm:w-auto bg-teal hover:bg-teal-dark text-white font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Sparkles className="size-3.5" />
+                  <span>Continue in Local Preview Mode</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => window.location.reload()}
+                  className="w-full sm:w-auto border-white/20 text-white hover:bg-white/10 cursor-pointer"
+                >
+                  Retry Connection
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="grid flex-1 grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4 min-h-0">
@@ -238,6 +287,7 @@ export function ClassroomView({
                 fallbackRole={user.role}
                 isCamEnabled={isCamEnabled}
                 isMicEnabled={isMicEnabled}
+                localMediaStream={localMediaStream}
               />
 
               {/* Remote Participants Tiles */}
@@ -585,6 +635,7 @@ function ParticipantTile({
   fallbackRole,
   isCamEnabled,
   isMicEnabled,
+  localMediaStream,
 }: {
   participant?: Participant;
   isLocal: boolean;
@@ -593,12 +644,23 @@ function ParticipantTile({
   fallbackRole: "TEACHER" | "STUDENT";
   isCamEnabled: boolean;
   isMicEnabled: boolean;
+  localMediaStream?: MediaStream | null;
 }) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const isSpeaking = activeSpeakerId === participant?.identity;
   const isTeacher = fallbackRole === "TEACHER";
 
   React.useEffect(() => {
+    // If local preview mode with localMediaStream
+    if (isLocal && localMediaStream && videoRef.current) {
+      videoRef.current.srcObject = localMediaStream;
+      return () => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+      };
+    }
+
     if (!participant || !videoRef.current) return;
 
     // Attach video track if present
@@ -612,7 +674,7 @@ function ParticipantTile({
         trackPub.track.detach(videoRef.current);
       }
     };
-  }, [participant]);
+  }, [participant, localMediaStream, isLocal]);
 
   return (
     <div

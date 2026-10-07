@@ -43,7 +43,11 @@ export function useLiveKitRoom({
   const [room, setRoom] = React.useState<Room | null>(null);
   const [isConnected, setIsConnected] = React.useState(false);
   const [isConnecting, setIsConnecting] = React.useState(false);
+  const [isDemoMode, setIsDemoMode] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Local media stream (fallback when LiveKit is not configured or in demo mode)
+  const [localMediaStream, setLocalMediaStream] = React.useState<MediaStream | null>(null);
 
   // Tracks & Media State
   const [isMicEnabled, setIsMicEnabled] = React.useState(true);
@@ -60,7 +64,7 @@ export function useLiveKitRoom({
   const [sharedNotes, setSharedNotes] = React.useState<string>("");
 
   React.useEffect(() => {
-    if (!serverUrl || !token) return;
+    if (!serverUrl || !token || isDemoMode) return;
 
     const newRoom = new Room({
       adaptiveStream: true,
@@ -147,7 +151,7 @@ export function useLiveKitRoom({
       isMounted = false;
       newRoom.disconnect();
     };
-  }, [serverUrl, token]);
+  }, [serverUrl, token, isDemoMode]);
 
   const updateParticipants = (r: Room) => {
     const list: Participant[] = [r.localParticipant];
@@ -155,57 +159,96 @@ export function useLiveKitRoom({
     setParticipants([...list]);
   };
 
-  const toggleMicrophone = async () => {
-    if (!room) return;
+  /**
+   * Activates local preview/demo mode when LiveKit server is unavailable
+   */
+  const enableDemoMode = async () => {
+    setIsDemoMode(true);
+    setError(null);
+    setIsConnecting(false);
+    setIsConnected(true);
+
     try {
-      const nextState = !isMicEnabled;
-      await room.localParticipant.setMicrophoneEnabled(nextState);
-      setIsMicEnabled(nextState);
-    } catch (err) {
-      console.error("Failed to toggle microphone:", err);
+      if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+        setLocalMediaStream(stream);
+        setIsCamEnabled(true);
+        setIsMicEnabled(true);
+      }
+    } catch (mediaErr) {
+      console.warn("Could not access local webcam/microphone for demo:", mediaErr);
     }
+  };
+
+  const toggleMicrophone = async () => {
+    const nextState = !isMicEnabled;
+    if (room) {
+      try {
+        await room.localParticipant.setMicrophoneEnabled(nextState);
+      } catch (err) {
+        console.error("Failed to toggle microphone:", err);
+      }
+    } else if (localMediaStream) {
+      localMediaStream.getAudioTracks().forEach((t) => {
+        t.enabled = nextState;
+      });
+    }
+    setIsMicEnabled(nextState);
   };
 
   const toggleCamera = async () => {
-    if (!room) return;
-    try {
-      const nextState = !isCamEnabled;
-      await room.localParticipant.setCameraEnabled(nextState);
-      setIsCamEnabled(nextState);
-    } catch (err) {
-      console.error("Failed to toggle camera:", err);
+    const nextState = !isCamEnabled;
+    if (room) {
+      try {
+        await room.localParticipant.setCameraEnabled(nextState);
+      } catch (err) {
+        console.error("Failed to toggle camera:", err);
+      }
+    } else if (localMediaStream) {
+      localMediaStream.getVideoTracks().forEach((t) => {
+        t.enabled = nextState;
+      });
     }
+    setIsCamEnabled(nextState);
   };
 
   const toggleScreenShare = async () => {
-    if (!room) return;
-    try {
-      const nextState = !isScreenSharing;
-      await room.localParticipant.setScreenShareEnabled(nextState);
-      setIsScreenSharing(nextState);
-    } catch (err) {
-      console.error("Failed to toggle screen share:", err);
-      setIsScreenSharing(false);
+    if (room) {
+      try {
+        const nextState = !isScreenSharing;
+        await room.localParticipant.setScreenShareEnabled(nextState);
+        setIsScreenSharing(nextState);
+      } catch (err) {
+        console.error("Failed to toggle screen share:", err);
+        setIsScreenSharing(false);
+      }
+    } else if (isDemoMode) {
+      setIsScreenSharing(!isScreenSharing);
     }
   };
 
   const sendChatMessage = async (text: string, senderName: string, senderRole: string) => {
-    if (!room || !text.trim()) return;
+    if (!text.trim()) return;
 
     const message: ChatMessage = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      senderId: room.localParticipant.identity,
+      senderId: room ? room.localParticipant.identity : "local-user",
       senderName,
       senderRole,
       text: text.trim(),
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
 
-    const payload = new TextEncoder().encode(
-      JSON.stringify({ type: "chat", message })
-    );
+    if (room) {
+      const payload = new TextEncoder().encode(
+        JSON.stringify({ type: "chat", message })
+      );
+      await room.localParticipant.publishData(payload, { reliable: true });
+    }
 
-    await room.localParticipant.publishData(payload, { reliable: true });
     setMessages((prev) => [...prev, message]);
   };
 
@@ -214,39 +257,44 @@ export function useLiveKitRoom({
     speakerName: string,
     speakerRole: "TEACHER" | "STUDENT"
   ) => {
-    if (!room || !text.trim()) return;
+    if (!text.trim()) return;
 
     const transcript: LiveTranscriptItem = {
       id: `seg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      speakerId: room.localParticipant.identity,
+      speakerId: room ? room.localParticipant.identity : "local-user",
       speakerName,
       speakerRole,
       text: text.trim(),
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
     };
 
-    const payload = new TextEncoder().encode(
-      JSON.stringify({ type: "transcript", transcript })
-    );
+    if (room) {
+      const payload = new TextEncoder().encode(
+        JSON.stringify({ type: "transcript", transcript })
+      );
+      await room.localParticipant.publishData(payload, { reliable: true });
+    }
 
-    await room.localParticipant.publishData(payload, { reliable: true });
     setTranscripts((prev) => [...prev, transcript]);
   };
 
   const updateSharedNotes = async (notes: string) => {
-    if (!room) return;
     setSharedNotes(notes);
 
-    const payload = new TextEncoder().encode(
-      JSON.stringify({ type: "notes", notes })
-    );
-
-    await room.localParticipant.publishData(payload, { reliable: false });
+    if (room) {
+      const payload = new TextEncoder().encode(
+        JSON.stringify({ type: "notes", notes })
+      );
+      await room.localParticipant.publishData(payload, { reliable: false });
+    }
   };
 
   const leaveRoom = () => {
     if (room) {
       room.disconnect();
+    }
+    if (localMediaStream) {
+      localMediaStream.getTracks().forEach((t) => t.stop());
     }
   };
 
@@ -254,7 +302,9 @@ export function useLiveKitRoom({
     room,
     isConnected,
     isConnecting,
+    isDemoMode,
     error,
+    localMediaStream,
     isMicEnabled,
     isCamEnabled,
     isScreenSharing,
@@ -263,6 +313,7 @@ export function useLiveKitRoom({
     messages,
     transcripts,
     sharedNotes,
+    enableDemoMode,
     toggleMicrophone,
     toggleCamera,
     toggleScreenShare,

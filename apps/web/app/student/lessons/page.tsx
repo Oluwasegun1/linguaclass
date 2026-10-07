@@ -12,47 +12,53 @@ export default async function StudentLessonsPage() {
   const student = session.dbUser.studentProfile;
   const studentTimezone = session.dbUser.timezone || "UTC";
 
-  // 1. Fetch student's enrolled courses
-  const enrollments = await db.enrollment.findMany({
-    where: { studentProfileId: student.id },
-    select: { courseId: true },
-  });
-
-  const enrolledCourseIds = enrollments.map((e) => e.courseId);
-
-  // 2. Fetch all lessons with course, teacher, AI session analysis, and assignments
-  const lessons = await db.lesson.findMany({
-    where: {
-      courseId: { in: enrolledCourseIds },
-    },
-    include: {
-      course: {
-        include: {
-          teacher: {
-            include: { user: true },
+  // Run enrollment lookup and full lesson fetch in parallel
+  const [enrollments, lessons] = await Promise.all([
+    db.enrollment.findMany({
+      where: { studentProfileId: student.id },
+      select: { courseId: true },
+    }),
+    // Fetch all lessons for the student — filter by enrolled courses post-fetch
+    // (we use the nested enrollment relation to avoid a separate round-trip)
+    db.lesson.findMany({
+      where: {
+        course: {
+          enrollments: {
+            some: { studentProfileId: student.id },
           },
         },
       },
-      session: {
-        include: {
-          aiAnalysis: {
-            include: {
-              vocabularyItems: true,
+      include: {
+        course: {
+          include: {
+            teacher: {
+              include: { user: true },
+            },
+          },
+        },
+        session: {
+          include: {
+            aiAnalysis: {
+              include: {
+                vocabularyItems: true,
+              },
+            },
+          },
+        },
+        assignments: {
+          include: {
+            submissions: {
+              where: { studentProfileId: student.id },
+              include: { feedback: true },
             },
           },
         },
       },
-      assignments: {
-        include: {
-          submissions: {
-            where: { studentProfileId: student.id },
-            include: { feedback: true },
-          },
-        },
-      },
-    },
-    orderBy: { scheduledAt: "asc" },
-  });
+      orderBy: { scheduledAt: "asc" },
+    }),
+  ]);
+
+  const enrolledCourseIds = enrollments.map((e) => e.courseId);
 
   const now = new Date();
 

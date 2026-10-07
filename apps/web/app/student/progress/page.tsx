@@ -3,34 +3,80 @@ import { db } from "@workspace/database";
 import { StudentSkillsRadar } from "@/components/student/student-skills-radar";
 import { StudentCorrectionsCard } from "@/components/student/student-corrections-card";
 import { StudentAssignmentsCard } from "@/components/student/student-assignments-card";
-import {
-  TrendingUp,
-  Award,
-  Sparkles,
-} from "lucide-react";
+import { TrendingUp } from "lucide-react";
 
 export default async function StudentProgressPage() {
   const session = await requireStudent();
   const student = session.dbUser.studentProfile;
 
-  const enrollments = await db.enrollment.findMany({
-    where: { studentProfileId: student.id },
-    include: { course: true },
-  });
+  // Run all queries in parallel — total wait = max(query times) not sum
+  const [enrollments, progressRecord, learnedVocabCount, dbCorrections, dbAssignments] =
+    await Promise.all([
+      db.enrollment.findMany({
+        where: { studentProfileId: student.id },
+        include: { course: true },
+      }),
+
+      db.progress.findFirst({
+        where: { studentProfileId: student.id },
+      }),
+
+      db.vocabularyItem.count({
+        where: {
+          studentProfileId: student.id,
+          status: "LEARNED",
+        },
+      }),
+
+      // Personal Grammar Corrections
+      db.grammarCorrection.findMany({
+        where: {
+          studentId: session.dbUser.id,
+          status: { in: ["ACCEPTED", "EDITED"] },
+        },
+        include: {
+          aiAnalysis: {
+            include: {
+              session: {
+                include: {
+                  lesson: {
+                    include: { course: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+        orderBy: { reviewedAt: "desc" },
+      }),
+
+      // Assignments & Feedback (all student assignments — filter by enrolled course post-fetch)
+      db.assignment.findMany({
+        where: {
+          lesson: {
+            course: {
+              enrollments: {
+                some: { studentProfileId: student.id },
+              },
+            },
+          },
+        },
+        include: {
+          lesson: {
+            include: { course: true },
+          },
+          submissions: {
+            where: { studentProfileId: student.id },
+            include: { feedback: true },
+          },
+        },
+        orderBy: { dueAt: "asc" },
+      }),
+    ]);
 
   const enrolledCourseIds = enrollments.map((e) => e.course.id);
 
-  // 1. Progress Data
-  const progressRecord = await db.progress.findFirst({
-    where: { studentProfileId: student.id },
-  });
-
-  const learnedVocabCount = await db.vocabularyItem.count({
-    where: {
-      studentProfileId: student.id,
-      status: "LEARNED",
-    },
-  });
+  // --- Transform results ---
 
   const progressData = {
     grammarScore: progressRecord?.grammarScore || 82,
@@ -43,28 +89,6 @@ export default async function StudentProgressPage() {
     assignmentsDone: progressRecord?.assignmentsDone || 3,
     targetLevel: enrollments[0]?.course.level || "B1",
   };
-
-  // 2. Personal Grammar Corrections
-  const dbCorrections = await db.grammarCorrection.findMany({
-    where: {
-      studentId: session.dbUser.id,
-      status: { in: ["ACCEPTED", "EDITED"] },
-    },
-    include: {
-      aiAnalysis: {
-        include: {
-          session: {
-            include: {
-              lesson: {
-                include: { course: true },
-              },
-            },
-          },
-        },
-      },
-    },
-    orderBy: { reviewedAt: "desc" },
-  });
 
   const formattedCorrections =
     dbCorrections.length > 0
@@ -102,25 +126,6 @@ export default async function StudentProgressPage() {
             courseTitle: "Conversational French",
           },
         ];
-
-  // 3. Assignments & Feedback
-  const dbAssignments = await db.assignment.findMany({
-    where: {
-      lesson: {
-        courseId: { in: enrolledCourseIds },
-      },
-    },
-    include: {
-      lesson: {
-        include: { course: true },
-      },
-      submissions: {
-        where: { studentProfileId: student.id },
-        include: { feedback: true },
-      },
-    },
-    orderBy: { dueAt: "asc" },
-  });
 
   const formattedAssignments = dbAssignments.map((a) => {
     const sub = a.submissions[0] || null;

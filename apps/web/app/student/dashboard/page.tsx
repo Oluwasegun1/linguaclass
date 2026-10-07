@@ -11,7 +11,7 @@ export default async function StudentDashboardPage() {
   const student = session.dbUser.studentProfile;
   const userTimezone = session.dbUser.timezone || "UTC";
 
-  // 1. Fetch student's enrollments & enrolled courses
+  // 1. Enrollments first — other queries need enrolledCourseIds as input
   const enrollments = await db.enrollment.findMany({
     where: { studentProfileId: student.id },
     include: {
@@ -30,25 +30,122 @@ export default async function StudentDashboardPage() {
 
   const enrolledCourseIds = enrollments.map((e) => e.course.id);
 
-  // 2. Fetch Priority 1: Next Lesson (SCHEDULED or LIVE)
-  const upcomingLessons = await db.lesson.findMany({
-    where: {
-      courseId: { in: enrolledCourseIds },
-      status: { in: ["SCHEDULED", "LIVE"] },
-    },
-    include: {
-      course: {
-        include: {
-          teacher: {
-            include: {
-              user: true,
+  // 2. Run all remaining queries in parallel — total wait = max(query times) not sum
+  const [
+    upcomingLessons,
+    dbAssignments,
+    lastCompletedDb,
+    rawVocabItems,
+    dbSubmissionsWithFeedback,
+  ] = await Promise.all([
+    // Next Lesson (SCHEDULED or LIVE)
+    db.lesson.findMany({
+      where: {
+        courseId: { in: enrolledCourseIds },
+        status: { in: ["SCHEDULED", "LIVE"] },
+      },
+      include: {
+        course: {
+          include: {
+            teacher: {
+              include: {
+                user: true,
+              },
             },
           },
         },
       },
-    },
-    orderBy: { scheduledAt: "asc" },
-  });
+      orderBy: { scheduledAt: "asc" },
+    }),
+
+    // Pending Assignments (approaching or overdue)
+    db.assignment.findMany({
+      where: {
+        lesson: {
+          courseId: { in: enrolledCourseIds },
+        },
+      },
+      include: {
+        lesson: {
+          include: { course: true },
+        },
+        submissions: {
+          where: { studentProfileId: student.id },
+        },
+      },
+      orderBy: { dueAt: "asc" },
+    }),
+
+    // Continue Reviewing (Single Last Completed Lesson)
+    db.lesson.findFirst({
+      where: {
+        courseId: { in: enrolledCourseIds },
+        status: "COMPLETED",
+      },
+      include: {
+        course: true,
+        session: {
+          include: {
+            aiAnalysis: {
+              include: {
+                vocabularyItems: true,
+                corrections: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { scheduledAt: "desc" },
+    }),
+
+    // Vocabulary to Review (3–5 items needing review)
+    db.vocabularyItem.findMany({
+      where: {
+        studentProfileId: student.id,
+        status: { in: ["NEW", "LEARNING"] },
+      },
+      orderBy: [{ isFavourited: "desc" }, { createdAt: "desc" }],
+      take: 4,
+    }),
+
+    // Recent Feedback
+    db.submission.findMany({
+      where: {
+        studentProfileId: student.id,
+        feedback: {
+          publishedAt: { not: null },
+        },
+      },
+      include: {
+        assignment: {
+          include: {
+            lesson: {
+              include: {
+                course: {
+                  include: {
+                    teacher: {
+                      include: {
+                        user: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        feedback: true,
+      },
+      orderBy: {
+        feedback: {
+          publishedAt: "desc",
+        },
+      },
+      take: 3,
+    }),
+  ]);
+
+  // --- Transform results ---
 
   const rawNextLesson = upcomingLessons[0] || null;
   const nextLessonData: NextLessonData | null = rawNextLesson
@@ -66,24 +163,6 @@ export default async function StudentDashboardPage() {
       }
     : null;
 
-  // 3. Fetch Priority 2: Pending Assignments (approaching or overdue)
-  const dbAssignments = await db.assignment.findMany({
-    where: {
-      lesson: {
-        courseId: { in: enrolledCourseIds },
-      },
-    },
-    include: {
-      lesson: {
-        include: { course: true },
-      },
-      submissions: {
-        where: { studentProfileId: student.id },
-      },
-    },
-    orderBy: { dueAt: "asc" },
-  });
-
   const pendingAssignments: PendingAssignmentItem[] = dbAssignments.map((a) => {
     const sub = a.submissions[0] || null;
     return {
@@ -98,28 +177,6 @@ export default async function StudentDashboardPage() {
         ? (sub.status as "DRAFT" | "SUBMITTED" | "GRADED")
         : "NONE",
     };
-  });
-
-  // 4. Fetch Priority 3: Continue Reviewing (Single Last Completed Lesson)
-  const lastCompletedDb = await db.lesson.findFirst({
-    where: {
-      courseId: { in: enrolledCourseIds },
-      status: "COMPLETED",
-    },
-    include: {
-      course: true,
-      session: {
-        include: {
-          aiAnalysis: {
-            include: {
-              vocabularyItems: true,
-              corrections: true,
-            },
-          },
-        },
-      },
-    },
-    orderBy: { scheduledAt: "desc" },
   });
 
   const lastCompletedLesson: LastCompletedLessonData | null = lastCompletedDb
@@ -157,76 +214,67 @@ export default async function StudentDashboardPage() {
       }
     : null;
 
-  // 5. Fetch Priority 4: Vocabulary to Review (3–5 items needing review)
-  let vocabItemsDb = await db.vocabularyItem.findMany({
-    where: {
-      studentProfileId: student.id,
-      status: { in: ["NEW", "LEARNING"] },
-    },
-    orderBy: [{ isFavourited: "desc" }, { createdAt: "desc" }],
-    take: 4,
-  });
-
-  if (vocabItemsDb.length === 0) {
-    vocabItemsDb = [
-      {
-        id: "vocab-rev-1",
-        studentProfileId: student.id,
-        aiAnalysisId: null,
-        word: "faire ses valises",
-        translation: "to pack one's bags / luggage",
-        exampleSentence: "Il faut absolument que je fasse mes valises ce soir avant de partir.",
-        language: "French",
-        status: "LEARNING" as any,
-        aiStatus: "ACCEPTED" as any,
-        isFavourited: true,
-        reviewedAt: new Date(),
-        createdAt: new Date(),
-      },
-      {
-        id: "vocab-rev-2",
-        studentProfileId: student.id,
-        aiAnalysisId: null,
-        word: "bien que (+ subjonctif)",
-        translation: "although / even though",
-        exampleSentence: "Bien qu'il pleuve des cordes, nous irons nous promener dans le parc.",
-        language: "French",
-        status: "NEW" as any,
-        aiStatus: "ACCEPTED" as any,
-        isFavourited: false,
-        reviewedAt: new Date(),
-        createdAt: new Date(),
-      },
-      {
-        id: "vocab-rev-3",
-        studentProfileId: student.id,
-        aiAnalysisId: null,
-        word: "avoir hâte de",
-        translation: "to look forward to / can't wait to",
-        exampleSentence: "J'ai vraiment hâte de visiter Paris avec ma famille l'été prochain.",
-        language: "French",
-        status: "LEARNING" as any,
-        aiStatus: "ACCEPTED" as any,
-        isFavourited: false,
-        reviewedAt: new Date(),
-        createdAt: new Date(),
-      },
-      {
-        id: "vocab-rev-4",
-        studentProfileId: student.id,
-        aiAnalysisId: null,
-        word: "au fur et à mesure",
-        translation: "gradually / step by step",
-        exampleSentence: "Vous assimilerez le vocabulaire idiomatique au fur et à mesure des cours.",
-        language: "French",
-        status: "LEARNING" as any,
-        aiStatus: "ACCEPTED" as any,
-        isFavourited: true,
-        reviewedAt: new Date(),
-        createdAt: new Date(),
-      },
-    ];
-  }
+  const vocabItemsDb =
+    rawVocabItems.length > 0
+      ? rawVocabItems
+      : [
+          {
+            id: "vocab-rev-1",
+            studentProfileId: student.id,
+            aiAnalysisId: null,
+            word: "faire ses valises",
+            translation: "to pack one's bags / luggage",
+            exampleSentence: "Il faut absolument que je fasse mes valises ce soir avant de partir.",
+            language: "French",
+            status: "LEARNING" as any,
+            aiStatus: "ACCEPTED" as any,
+            isFavourited: true,
+            reviewedAt: new Date(),
+            createdAt: new Date(),
+          },
+          {
+            id: "vocab-rev-2",
+            studentProfileId: student.id,
+            aiAnalysisId: null,
+            word: "bien que (+ subjonctif)",
+            translation: "although / even though",
+            exampleSentence: "Bien qu'il pleuve des cordes, nous irons nous promener dans le parc.",
+            language: "French",
+            status: "NEW" as any,
+            aiStatus: "ACCEPTED" as any,
+            isFavourited: false,
+            reviewedAt: new Date(),
+            createdAt: new Date(),
+          },
+          {
+            id: "vocab-rev-3",
+            studentProfileId: student.id,
+            aiAnalysisId: null,
+            word: "avoir hâte de",
+            translation: "to look forward to / can't wait to",
+            exampleSentence: "J'ai vraiment hâte de visiter Paris avec ma famille l'été prochain.",
+            language: "French",
+            status: "LEARNING" as any,
+            aiStatus: "ACCEPTED" as any,
+            isFavourited: false,
+            reviewedAt: new Date(),
+            createdAt: new Date(),
+          },
+          {
+            id: "vocab-rev-4",
+            studentProfileId: student.id,
+            aiAnalysisId: null,
+            word: "au fur et à mesure",
+            translation: "gradually / step by step",
+            exampleSentence: "Vous assimilerez le vocabulaire idiomatique au fur et à mesure des cours.",
+            language: "French",
+            status: "LEARNING" as any,
+            aiStatus: "ACCEPTED" as any,
+            isFavourited: true,
+            reviewedAt: new Date(),
+            createdAt: new Date(),
+          },
+        ];
 
   const vocabToReview: VocabQuickItem[] = vocabItemsDb.map((v) => ({
     id: v.id,
@@ -236,42 +284,6 @@ export default async function StudentDashboardPage() {
     language: v.language,
     status: v.status as "NEW" | "LEARNING" | "LEARNED",
   }));
-
-  // 6. Fetch Priority 5: Recent Feedback
-  const dbSubmissionsWithFeedback = await db.submission.findMany({
-    where: {
-      studentProfileId: student.id,
-      feedback: {
-        publishedAt: { not: null },
-      },
-    },
-    include: {
-      assignment: {
-        include: {
-          lesson: {
-            include: {
-              course: {
-                include: {
-                  teacher: {
-                    include: {
-                      user: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      feedback: true,
-    },
-    orderBy: {
-      feedback: {
-        publishedAt: "desc",
-      },
-    },
-    take: 3,
-  });
 
   const recentFeedbacks: RecentFeedbackData[] =
     dbSubmissionsWithFeedback.length > 0
