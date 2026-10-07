@@ -14,8 +14,13 @@ export async function POST(
   const { id: lessonId } = await params;
 
   try {
-    const body = await req.json();
-    const { itemType, itemId, action, teacherNote, translation, exampleSentence } = body;
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
+    const { itemType, itemId, action, teacherNote, translation, exampleSentence } = body ?? {};
 
     const lesson = await db.lesson.findUnique({
       where: { id: lessonId },
@@ -30,10 +35,15 @@ export async function POST(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    const lessonAnalysis = lesson.session
+      ? await db.aIAnalysis.findUnique({
+          where: { sessionId: lesson.session.id },
+          select: { id: true },
+        })
+      : null;
+
     if (action === "ACCEPT_ALL") {
-      const aiAnalysis = await db.aIAnalysis.findUnique({
-        where: { sessionId: lesson.session?.id },
-      });
+      const aiAnalysis = lessonAnalysis;
 
       if (!aiAnalysis) {
         return NextResponse.json({ error: "No AI analysis to review" }, { status: 400 });
@@ -65,7 +75,7 @@ export async function POST(
         where: { id: itemId },
       });
 
-      if (!correction) {
+      if (!correction || correction.aiAnalysisId !== lessonAnalysis?.id) {
         return NextResponse.json({ error: "Correction not found" }, { status: 404 });
       }
 
@@ -90,7 +100,7 @@ export async function POST(
         where: { id: itemId },
       });
 
-      if (!vocab) {
+      if (!vocab || vocab.aiAnalysisId !== lessonAnalysis?.id) {
         return NextResponse.json({ error: "Vocabulary item not found" }, { status: 404 });
       }
 

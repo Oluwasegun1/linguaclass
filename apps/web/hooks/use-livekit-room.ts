@@ -63,6 +63,12 @@ export function useLiveKitRoom({
   const [transcripts, setTranscripts] = React.useState<LiveTranscriptItem[]>([]);
   const [sharedNotes, setSharedNotes] = React.useState<string>("");
 
+  const updateParticipants = React.useCallback((r: Room) => {
+    const list: Participant[] = [r.localParticipant];
+    r.remoteParticipants.forEach((p) => list.push(p));
+    setParticipants([...list]);
+  }, []);
+
   React.useEffect(() => {
     if (!serverUrl || !token || isDemoMode) return;
 
@@ -151,13 +157,8 @@ export function useLiveKitRoom({
       isMounted = false;
       newRoom.disconnect();
     };
-  }, [serverUrl, token, isDemoMode]);
+  }, [serverUrl, token, isDemoMode, updateParticipants]);
 
-  const updateParticipants = (r: Room) => {
-    const list: Participant[] = [r.localParticipant];
-    r.remoteParticipants.forEach((p) => list.push(p));
-    setParticipants([...list]);
-  };
 
   /**
    * Activates local preview/demo mode when LiveKit server is unavailable

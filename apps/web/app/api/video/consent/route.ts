@@ -1,6 +1,32 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/auth/auth";
+import { getCurrentUser, type CurrentUserSession } from "@/lib/auth/auth";
+import { canAccessCourse } from "@/lib/auth/access";
 import { db } from "@workspace/database";
+
+/** Returns "ok", "not_found" or "forbidden" for the given recording session. */
+async function authorizeSession(
+  user: CurrentUserSession,
+  sessionId: string
+): Promise<"ok" | "not_found" | "forbidden"> {
+  const liveSession = await db.session.findUnique({
+    where: { id: sessionId },
+    select: {
+      lesson: {
+        select: {
+          course: {
+            select: {
+              teacherId: true,
+              enrollments: { select: { studentProfileId: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!liveSession) return "not_found";
+  return canAccessCourse(user, liveSession.lesson.course) ? "ok" : "forbidden";
+}
 
 export async function GET(req: Request) {
   const session = await getCurrentUser();
@@ -16,6 +42,14 @@ export async function GET(req: Request) {
   }
 
   try {
+    const access = await authorizeSession(session, sessionId);
+    if (access === "not_found") {
+      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    }
+    if (access === "forbidden") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const consent = await db.consentRecord.findUnique({
       where: {
         sessionId_userId: {
@@ -49,8 +83,16 @@ export async function POST(req: Request) {
   try {
     const { sessionId, consented } = await req.json();
 
-    if (!sessionId) {
+    if (!sessionId || typeof sessionId !== "string") {
       return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+    }
+
+    const access = await authorizeSession(session, sessionId);
+    if (access === "not_found") {
+      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    }
+    if (access === "forbidden") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const consentRecord = await db.consentRecord.upsert({

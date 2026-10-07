@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser, getTeacherSession } from "@/lib/auth/auth";
+import { canAccessCourse } from "@/lib/auth/access";
 import { db } from "@workspace/database";
 
 export async function GET(req: Request) {
@@ -13,6 +14,45 @@ export async function GET(req: Request) {
   const lessonId = searchParams.get("lessonId");
 
   try {
+    if (!courseId && !lessonId) {
+      return NextResponse.json(
+        { error: "Either courseId or lessonId must be specified" },
+        { status: 400 }
+      );
+    }
+
+    // Authorize against the owning course before exposing its resources
+    const owningCourse = lessonId
+      ? (
+          await db.lesson.findUnique({
+            where: { id: lessonId },
+            select: {
+              courseId: true,
+              course: {
+                select: {
+                  teacherId: true,
+                  enrollments: { select: { studentProfileId: true } },
+                },
+              },
+            },
+          })
+        )?.course
+      : await db.course.findUnique({
+          where: { id: courseId! },
+          select: {
+            teacherId: true,
+            enrollments: { select: { studentProfileId: true } },
+          },
+        });
+
+    if (!owningCourse) {
+      return NextResponse.json({ error: "Course or lesson not found" }, { status: 404 });
+    }
+
+    if (!canAccessCourse(session, owningCourse)) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const where: any = {};
     if (courseId) where.courseId = courseId;
     if (lessonId) where.lessonId = lessonId;
@@ -69,6 +109,13 @@ export async function POST(req: Request) {
 
       if (lesson.course.teacherId !== session.dbUser.teacherProfile.id) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+
+      if (targetCourseId && targetCourseId !== lesson.courseId) {
+        return NextResponse.json(
+          { error: "lessonId does not belong to the specified courseId" },
+          { status: 400 }
+        );
       }
 
       if (!targetCourseId) {

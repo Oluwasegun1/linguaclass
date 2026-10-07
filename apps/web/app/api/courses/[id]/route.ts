@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser, getTeacherSession } from "@/lib/auth/auth";
+import { canAccessCourse } from "@/lib/auth/access";
+import { deleteLessonsCascade } from "@/lib/db/delete-lessons";
 import { db, CourseLevel } from "@workspace/database";
 
 export async function GET(
@@ -72,6 +74,10 @@ export async function GET(
 
     if (!course) {
       return NextResponse.json({ error: "Course not found" }, { status: 404 });
+    }
+
+    if (!canAccessCourse(session, course)) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     return NextResponse.json({ course });
@@ -175,18 +181,12 @@ export async function DELETE(
       });
       const lessonIds = lessons.map((l) => l.id);
 
-      // Delete sessions
-      if (lessonIds.length > 0) {
-        await tx.session.deleteMany({
-          where: { lessonId: { in: lessonIds } },
-        });
-      }
+      // Delete lessons with their session subtree, assignments, notes, resources
+      await deleteLessonsCascade(tx, lessonIds);
 
-      // Delete resources linked to lessons or this course
+      // Delete remaining course-level resources
       await tx.resource.deleteMany({
-        where: {
-          OR: [{ courseId: id }, { lessonId: { in: lessonIds } }],
-        },
+        where: { courseId: id },
       });
 
       // Delete enrollments
@@ -194,10 +194,6 @@ export async function DELETE(
         where: { courseId: id },
       });
 
-      // Delete lessons
-      await tx.lesson.deleteMany({
-        where: { courseId: id },
-      });
 
       // Delete course
       await tx.course.delete({

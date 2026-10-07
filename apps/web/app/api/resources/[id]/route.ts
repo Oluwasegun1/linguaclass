@@ -28,9 +28,12 @@ export async function DELETE(
       return NextResponse.json({ error: "Resource not found" }, { status: 404 });
     }
 
-    // Check ownership
+    // Check ownership (orphan resources fall back to the uploader)
     const courseTeacherId = resource.course?.teacherId || resource.lesson?.course.teacherId;
-    if (courseTeacherId && courseTeacherId !== session.dbUser.teacherProfile.id) {
+    const isOwner = courseTeacherId
+      ? courseTeacherId === session.dbUser.teacherProfile.id
+      : resource.uploadedBy === session.dbUser.id;
+    if (!isOwner) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

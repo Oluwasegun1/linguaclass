@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser, getTeacherSession } from "@/lib/auth/auth";
+import { canAccessCourse } from "@/lib/auth/access";
+import { deleteLessonsCascade } from "@/lib/db/delete-lessons";
 import { db, SessionStatus } from "@workspace/database";
 
 export async function GET(
@@ -62,6 +64,10 @@ export async function GET(
       return NextResponse.json({ error: "Lesson not found" }, { status: 404 });
     }
 
+    if (!canAccessCourse(session, lesson.course)) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     return NextResponse.json({ lesson });
   } catch (error) {
     console.error("Failed to get lesson:", error);
@@ -97,8 +103,13 @@ export async function PATCH(
       return NextResponse.json({ error: "Forbidden: You do not own this lesson's course" }, { status: 403 });
     }
 
-    const body = await req.json();
-    const { title, scheduledAt, durationMins, timezone, objectives, status } = body;
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
+    const { title, scheduledAt, durationMins, timezone, objectives, status } = body ?? {};
 
     const dataToUpdate: any = {};
 
@@ -115,13 +126,20 @@ export async function PATCH(
     }
 
     if (durationMins !== undefined) {
-      dataToUpdate.durationMins = parseInt(durationMins, 10) || 60;
+      const parsedDuration = parseInt(durationMins, 10) || 60;
+      if (parsedDuration <= 0) {
+        return NextResponse.json({ error: "durationMins must be a positive number" }, { status: 400 });
+      }
+      dataToUpdate.durationMins = parsedDuration;
     }
 
     if (timezone && typeof timezone === "string") {
       dataToUpdate.timezone = timezone.trim();
     }
 
+    if (objectives !== undefined && objectives !== null && typeof objectives !== "string") {
+      return NextResponse.json({ error: "objectives must be a string" }, { status: 400 });
+    }
     if (objectives !== undefined) {
       dataToUpdate.objectives = objectives ? objectives.trim() : null;
     }
@@ -216,31 +234,10 @@ export async function DELETE(
       return NextResponse.json({ error: "Forbidden: You do not own this lesson" }, { status: 403 });
     }
 
+    // Removes the session subtree (transcript, analysis, recording, ...),
+    // assignments, notes and resources before the lesson itself.
     await db.$transaction(async (tx) => {
-      // Delete session
-      await tx.session.deleteMany({
-        where: { lessonId: id },
-      });
-
-      // Delete resources linked directly to this lesson
-      await tx.resource.deleteMany({
-        where: { lessonId: id },
-      });
-
-      // Delete notes
-      await tx.note.deleteMany({
-        where: { lessonId: id },
-      });
-
-      // Delete assignments
-      await tx.assignment.deleteMany({
-        where: { lessonId: id },
-      });
-
-      // Delete lesson
-      await tx.lesson.delete({
-        where: { id },
-      });
+      await deleteLessonsCascade(tx, [id]);
     });
 
     return NextResponse.json({ success: true });

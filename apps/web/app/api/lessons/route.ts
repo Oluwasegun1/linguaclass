@@ -27,6 +27,9 @@ export async function GET(req: Request) {
           },
         },
       };
+    } else {
+      // No usable role profile: never fall through to an unscoped query.
+      return NextResponse.json({ lessons: [] });
     }
 
     if (courseId) {
@@ -92,12 +95,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  let body;
   try {
-    const body = await req.json();
-    const { courseId, title, scheduledAt, durationMins, timezone, objectives } = body;
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
 
-    if (!courseId) {
+  try {
+    const { courseId, title, scheduledAt, durationMins, timezone, objectives } = body ?? {};
+
+    if (!courseId || typeof courseId !== "string") {
       return NextResponse.json({ error: "courseId is required" }, { status: 400 });
+    }
+
+    if (objectives !== undefined && objectives !== null && typeof objectives !== "string") {
+      return NextResponse.json({ error: "objectives must be a string" }, { status: 400 });
     }
 
     if (!title || typeof title !== "string" || !title.trim()) {
@@ -138,6 +151,9 @@ export async function POST(req: Request) {
     }
 
     const duration = parseInt(durationMins, 10) || 60;
+    if (duration <= 0) {
+      return NextResponse.json({ error: "durationMins must be a positive number" }, { status: 400 });
+    }
     const lessonTz = timezone || session.dbUser.timezone || "UTC";
 
     // Create Lesson and connected Session atomically
